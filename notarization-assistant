@@ -1,0 +1,157 @@
+#!/bin/bash
+
+# Notarize Mac apps and create ZIP archive for distribution
+
+# Colors. Use like this: echo -e "${GREEN}Green colored statement"
+WHITE='\033[0;37m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+
+# Draw line function
+draw_line() {
+  printf '%*s\n' "${COLUMNS:-$(tput cols)}" '' | tr ' ' -
+}
+
+echo
+draw_line #------------------------------
+
+# Check if notarytool is installed
+NOTARYTOOL_COMMAND="xcrun notarytool --version"
+if ! $NOTARYTOOL_COMMAND &>/dev/null; then
+  echo
+  echo "notarytool could not be found"
+  exit 1
+fi
+
+# If notarytool is installed show version number
+echo
+echo "Found notarytool version:" && $NOTARYTOOL_COMMAND
+
+# Ask for app to notarize
+echo
+echo "Select app to notarize"
+SELECTED_APP="$(osascript -l JavaScript -e 'a=Application.currentApplication();a.includeStandardAdditions=true;a.chooseFile({withPrompt:"Select app to notarize"}).toString()')"
+# Check if $SELECTED_APP is empty
+if [ -z "$SELECTED_APP" ]; then
+  echo
+  echo Terminating script because you have not selected an app...
+  exit 1
+else
+  echo
+  echo -e "You selected this app:\n$SELECTED_APP"
+  echo
+  echo -e "Your selected app has following bundle id:"
+  osascript -e "id of app \"$SELECTED_APP\""
+  echo
+fi
+
+# Codesigning function
+codesigning_function() {
+  # Ask for common name of code signing certificate
+  echo
+  echo What is the common name of your code signing certificate?
+  read -r COMMON_NAME
+  # Code signing no longer allows any file in an app bundle to have an extended attribute containing a resource fork or Finder info
+  # Remove all extended attributes from your app bundle with the xattr command
+  xattr -cr "$SELECTED_APP"
+  codesign -s "$COMMON_NAME" -o runtime --timestamp -f "$SELECTED_APP"
+}
+
+# Ask if we want to codesign the app before notarizing
+read -r -p "Do you want to codesign the app before notarizing? (y/n) " choice
+case "$choice" in
+y | Y) echo "Proceed with codesigning..." && codesigning_function ;;
+n | N) echo "Proceed without codesigning..." ;;
+*) echo "invalid" ;;
+esac
+
+# Create zip archive of selected app for notarization
+ZIP_ARCHIVE_FOR_NOTARIZATION="${SELECTED_APP%.*}.zip"
+/usr/bin/ditto -c -k --keepParent "$SELECTED_APP" "$ZIP_ARCHIVE_FOR_NOTARIZATION"
+echo
+echo -e "Created ZIP archive for notarization:\n$ZIP_ARCHIVE_FOR_NOTARIZATION"
+
+# Credentials
+echo
+echo Now we need your credentials...
+
+# Ask for apple id
+echo
+echo Type your apple id
+read -r APPLE_ID
+
+# Ask for team id
+echo
+echo Type your team id
+read -r TEAM_ID
+
+# Ask for app-specific password
+echo
+echo Type your app-specific password
+read -r PASSWORD
+
+# Show all inputs
+echo
+echo This is your apple id: "$APPLE_ID"
+echo This is your team id: "$TEAM_ID"
+echo This is your app-specific password: "$PASSWORD"
+echo -e "This is your ZIP archive for notarization:\n$ZIP_ARCHIVE_FOR_NOTARIZATION"
+
+# Submitting zip archive for notarization
+echo
+echo Submitting zip archive for notarization...
+echo
+
+draw_line #------------------------------
+
+echo
+xcrun notarytool submit "$ZIP_ARCHIVE_FOR_NOTARIZATION" --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$PASSWORD" --verbose --wait
+echo
+
+draw_line #------------------------------
+
+# Remove zip archive which was used for notarization
+rm -f "$ZIP_ARCHIVE_FOR_NOTARIZATION"
+echo
+echo Removed ZIP archive which was used for notarization
+echo
+
+draw_line #------------------------------
+
+# Staple app after notarization
+echo
+xcrun stapler staple -v "$SELECTED_APP"
+echo
+
+draw_line #------------------------------
+
+# Check if app is notarized
+echo
+echo Checking if app is notarized:
+spctl -a -vvv -t install "$SELECTED_APP"
+echo
+
+draw_line #------------------------------
+
+# Create zip archive of notarized app for distribution
+ZIP_ARCHIVE_FOR_DISTRIBUTION="${SELECTED_APP%.*}.zip"
+/usr/bin/ditto -c -k --keepParent "$SELECTED_APP" "$ZIP_ARCHIVE_FOR_DISTRIBUTION"
+echo
+echo -e "${GREEN}Created ZIP archive for distribution:\n$ZIP_ARCHIVE_FOR_DISTRIBUTION${WHITE}"
+
+# How to staple
+# xcrun stapler staple -v /path/to/your.app
+
+# How check if app is notarized
+# spctl -a -vvv -t install /path/to/your.app
+
+# How check bundle id of app
+# osascript -e 'id of app "/path/to/your.app"'
+
+# If notarization succeeds, notarytool prints a submission identifier:
+# Successfully uploaded file.
+# id: 2efe2717-52ef-43a5-96dc-0797e4ca1041
+# path: /Users/janea/Desktop/OvernightTextEditor_11.6.8.zip
+# Save the id value to use later when checking the status of your request:
+# xcrun notarytool log 2efe2717-52ef-43a5-96dc-0797e4ca1041 --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$PASSWORD"
